@@ -18,7 +18,6 @@ from nsml import DATASET_PATH, HAS_DATASET, GPU_NUM, IS_ON_NSML
 from torchtext.data import Example
 
 from model import *
-from pretrain import *
 from data import HateSpeech
 from sklearn.metrics import f1_score
 from torchsummary import summary
