@@ -68,16 +68,17 @@ config = Config({
     "n_dec_vocab": 0,
     "n_enc_seq": 512,
     "n_dec_seq": 512,
-    "kernel_size": 4,
+    "kernel_size": 3,
     "padding": 1,
-    "n_layer": 4,
-    "d_hidn": 512,
+    "n_layer": 3,
+    "d_hidn": 768,
     "n_head": 12,
     "d_head": 64,
     "dropout": 0.4,
-    "learning_rate": 1e-6,
-    "batch_size":2**6,
-    "weights":[4,3]
+    "learning_rate": 5e-6,
+    "batch_size":2**5,
+    "weights":[3,3],
+    "weight_decay":0.0001
         })
 config.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")    
 
@@ -106,13 +107,13 @@ def collate_fn(inputs):
 #########################################################################################
 class Trainer(object):
     print(DATASET_PATH)
-    TRAIN_DATA_PATH = '{}/train/train_data'.format(DATASET_PATH[0])
-    RAW_DATA_PATH = '{}/train/train_data'.format(DATASET_PATH[2])
+    TRAIN_DATA_PATH = '{}/train/train_data'.format(DATASET_PATH)
+#     RAW_DATA_PATH = '{}/train/train_data'.format(DATASET_PATH[2])
     
     def __init__(self, hdfs_host: str = None, device: str = 'cpu'):
         self.device = device
         self.task = HateSpeech(self.TRAIN_DATA_PATH, (9, 1))
-        self.raw = HateSpeech(self.RAW_DATA_PATH)
+#         self.raw = HateSpeech(self.RAW_DATA_PATH)
         config.n_enc_vocab = self.task.max_vocab_indexes['syllable_contents']
         config.n_dec_vocab = self.task.max_vocab_indexes['syllable_contents']
         ## train_data를 비율로 나눔
@@ -128,16 +129,27 @@ class Trainer(object):
     
     def train(self):
         print('num of train data = ', len(self.task.datasets[0]))
-        max_epoch = 100
-        optimizer = optim.AdamW(self.model.parameters(), lr=config.learning_rate, eps=1e-8)
+        max_epoch = 300
+        
         total_len = len(self.task.datasets[0]) ## 전체 문장 갯수
-        train_loader = torch.utils.data.DataLoader(self.task.datasets[0], batch_size=self.batch_size, shuffle=True, collate_fn=collate_fn, num_workers = 2)
-        test_loader = torch.utils.data.DataLoader(self.task.datasets[1], batch_size=self.batch_size, shuffle=False, collate_fn=collate_fn, num_workers = 2)
+        neg_len = len([data.eval_reply for data in self.task.datasets[0] if data.eval_reply == 0])
+        weight = 1. / torch.Tensor([neg_len,total_len-neg_len])
+        samples_weight = torch.tensor([weight[data.eval_reply] for data in self.task.datasets[0]]) 
+        sampler = torch.utils.data.sampler.WeightedRandomSampler(samples_weight, total_len)
+        
+        train_loader = torch.utils.data.DataLoader(self.task.datasets[0], batch_size=self.batch_size,
+                                                   sampler=sampler,collate_fn=collate_fn, num_workers = 2)
+        test_loader = torch.utils.data.DataLoader(self.task.datasets[1], batch_size=self.batch_size,
+                                                  shuffle=False, collate_fn=collate_fn, num_workers = 2)
+        
+        
+        optimizer = optim.Adam(self.model.parameters(), lr=config.learning_rate, eps=1e-4, weight_decay=config.weight_decay)
         max_f1 = 0
-        max_f1_epoch = 0
+        max_f1_i = 0
+        stack = 0
+        i = 0
         for epoch in range(max_epoch):
             loss_sum, acc_sum, len_batch_sum = 0., 0., 0.
-            
             self.model.train()
             for batch in train_loader:
                 self.model.zero_grad()
@@ -157,10 +169,10 @@ class Trainer(object):
                 acc = torch.sum(pred.sigmoid().round()==target, dtype=torch.float32)
                 acc_sum += acc.tolist()
                 loss_sum += loss.tolist()
-
+                
             print(json.dumps(
-                {'type': 'train', 'dataset': 'hate_speech',
-                 'epoch': epoch, 'loss': loss_sum / total_len, 'acc': acc_sum / total_len}))
+            {'type': 'train', 'dataset': 'hate_speech',
+             'epoch': epoch, 'loss': loss_sum / total_len, 'acc': acc_sum / total_len}))
 
             loss_avg, acc_avg, f1 = self.eval(test_loader, len(self.task.datasets[1]))
             if f1>max_f1:
@@ -171,7 +183,7 @@ class Trainer(object):
                  'loss': loss_avg,  'acc': acc_avg, 'f1': f1}))
             print('max f1 scored checkpoint : ', max_f1, max_f1_epoch)
             nsml.save(epoch)
-
+    
     def eval(self, dataloader, total:int):
         test_loader = dataloader
         pred_lst = list()
