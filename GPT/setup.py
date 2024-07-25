@@ -21,7 +21,7 @@ setup(
         'pymongo',
         'redis',
         'scikit-learn',
-        'torch==1.5.0',
+        'torch==2.2.0',
         'torchtext',
         'revtok',
         'torchsummary'
